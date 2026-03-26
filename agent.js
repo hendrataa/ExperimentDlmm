@@ -109,9 +109,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         // Hermes sometimes returns null content — pop the empty message and retry once
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
-          log("agent", "Empty response, retrying...");
+          emptyStreak++;
+          log("agent", `Empty response, retrying... (${emptyStreak}/3)`);
+          if (emptyStreak >= 3) {
+            log("agent", "3 consecutive empty responses — aborting to save tokens");
+            return { content: "Agent aborted: model returned empty responses. Try again or switch model.", userMessage: goal };
+          }
           continue;
         }
+        emptyStreak = 0; // reset on good response
         log("agent", "Final answer reached");
         log("agent", msg.content);
         return { content: msg.content, userMessage: goal };
@@ -151,6 +157,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       }));
 
       messages.push(...toolResults);
+      emptyStreak = 0; // successful tool call — reset streak
     } catch (error) {
       log("error", `Agent loop error at step ${step}: ${error.message}`);
 
