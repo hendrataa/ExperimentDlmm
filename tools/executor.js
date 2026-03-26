@@ -8,6 +8,10 @@ import {
   claimFees,
   closePosition,
   searchPools,
+  getPoolOhlcv,
+  getBinLiquidity,
+  getSwapQuote,
+  claimAllRewards,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
@@ -45,6 +49,10 @@ const toolMap = {
   get_my_positions: getMyPositions,
   get_wallet_positions: getWalletPositions,
   search_pools: searchPools,
+  get_pool_ohlcv: getPoolOhlcv,
+  get_bin_liquidity: getBinLiquidity,
+  get_swap_quote: getSwapQuote,
+  claim_all_rewards: claimAllRewards,
   get_token_info: getTokenInfo,
   get_token_holders: getTokenHolders,
   get_token_narrative: getTokenNarrative,
@@ -235,6 +243,7 @@ const toolMap = {
 const WRITE_TOOLS = new Set([
   "deploy_position",
   "claim_fees",
+  "claim_all_rewards",
   "close_position",
   "swap_token",
 ]);
@@ -308,7 +317,7 @@ export async function executeTool(name, args) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);
           }
         }
-      } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
+      } else if ((name === "claim_fees" || name === "claim_all_rewards") && config.management.autoSwapAfterClaim && result.base_mint) {
         try {
           const balances = await getWalletBalances({});
           const token = balances.tokens?.find(t => t.mint === result.base_mint);

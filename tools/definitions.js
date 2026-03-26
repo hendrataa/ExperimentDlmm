@@ -1020,6 +1020,100 @@ Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.`,
     }
   },
 
+  // ═══════════════════════════════════════════
+  //  NEW METEORA TOOLS
+  // ═══════════════════════════════════════════
+  {
+    type: "function",
+    function: {
+      name: "get_pool_ohlcv",
+      description: `Get OHLCV candlestick price history for a DLMM pool.
+Use during screening to analyze price momentum and trend before deploying.
+Returns candles with open/high/low/close/volume plus a summary (trend direction, % change, high/low).
+
+Resolutions: 1m, 5m, 15m, 1h, 4h, 1d
+count_back: number of candles to return (default 24)
+
+Good signals: steady uptrend, increasing volume, small wicks.
+Bad signals: sharp crash, declining volume, erratic price action.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string", description: "The DLMM pool address" },
+          resolution: {
+            type: "string",
+            enum: ["1m", "5m", "15m", "1h", "4h", "1d"],
+            description: "Candle resolution. Use 1h for screening, 5m for management. Default: 1h"
+          },
+          count_back: { type: "number", description: "Number of candles to return (default 24, max 100)" }
+        },
+        required: ["pool_address"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_bin_liquidity",
+      description: `Get bin-level liquidity distribution around the active bin for a DLMM pool.
+Use before deploying to see where liquidity is concentrated and choose optimal bin range.
+Returns each bin's token X/Y amounts and whether it's the active bin.
+
+bins_left/bins_right: how many bins away from active bin to fetch (max 50 each side).`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string", description: "The DLMM pool address" },
+          bins_left: { type: "number", description: "Bins to fetch below active bin (default 10, max 50)" },
+          bins_right: { type: "number", description: "Bins to fetch above active bin (default 10, max 50)" }
+        },
+        required: ["pool_address"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_swap_quote",
+      description: `Get a swap quote for a DLMM pool before executing a swap.
+Use this to preview price impact and expected output before calling swap_token.
+Returns: amount_out, fee, price_impact_pct, min_amount_out.
+
+swap_for_y=true: selling token X to get token Y (e.g. selling base token for SOL).
+swap_for_y=false: selling token Y to get token X (e.g. buying base token with SOL).`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string", description: "The DLMM pool address" },
+          amount: { type: "number", description: "Amount of input token (human-readable units)" },
+          swap_for_y: { type: "boolean", description: "true = sell X for Y, false = sell Y for X. Default: true" }
+        },
+        required: ["pool_address", "amount"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "claim_all_rewards",
+      description: `Claim all fees AND liquidity mining (LM) rewards for all positions in a pool.
+Use this instead of claim_fees when you want to claim both swap fees and any mining rewards.
+Processes all open positions in the pool in one call.
+
+WARNING: This executes real on-chain transactions.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: { type: "string", description: "The pool address to claim all rewards from" }
+        },
+        required: ["pool_address"]
+      }
+    }
+  },
+
   {
     type: "function",
     function: {

@@ -483,6 +483,143 @@ export async function getWalletPositions({ wallet_address }) {
   }
 }
 
+// ─── Get Pool OHLCV ───────────────────────────────────────────
+export async function getPoolOhlcv({ pool_address, resolution = "1h", count_back = 24 }) {
+  pool_address = normalizeMint(pool_address);
+  const to = Math.floor(Date.now() / 1000);
+  const url = `https://dlmm.datapi.meteora.ag/pools/${pool_address}/ohlcv?resolution=${resolution}&countBack=${count_back}&to=${to}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`OHLCV API ${res.status}`);
+    const data = await res.json();
+    const candles = (data.t || []).map((t, i) => ({
+      time: t,
+      open: data.o?.[i],
+      high: data.h?.[i],
+      low: data.l?.[i],
+      close: data.c?.[i],
+      volume: data.v?.[i],
+    }));
+    if (candles.length === 0) return { pool: pool_address, resolution, candles: [] };
+    const closes = candles.map(c => c.close).filter(Boolean);
+    const pctChange = closes[0] > 0 ? ((closes[closes.length - 1] - closes[0]) / closes[0] * 100).toFixed(2) : null;
+    return {
+      pool: pool_address,
+      resolution,
+      candles,
+      summary: {
+        high: Math.max(...candles.map(c => c.high).filter(Boolean)),
+        low: Math.min(...candles.map(c => c.low).filter(Boolean)),
+        pct_change: parseFloat(pctChange),
+        trend: parseFloat(pctChange) > 2 ? "up" : parseFloat(pctChange) < -2 ? "down" : "flat",
+      },
+    };
+  } catch (e) {
+    log("ohlcv_error", e.message);
+    return { error: e.message, pool: pool_address };
+  }
+}
+
+// ─── Get Bin Liquidity ─────────────────────────────────────────
+export async function getBinLiquidity({ pool_address, bins_left = 10, bins_right = 10 }) {
+  pool_address = normalizeMint(pool_address);
+  try {
+    const pool = await getPool(pool_address);
+    const activeBin = await pool.getActiveBin();
+    const lowerBinId = activeBin.binId - Math.min(bins_left, 50);
+    const upperBinId = activeBin.binId + Math.min(bins_right, 50);
+    const { bins } = await pool.getBinsBetweenLowerAndUpperBound(lowerBinId, upperBinId, activeBin);
+    return {
+      pool: pool_address,
+      active_bin: activeBin.binId,
+      bin_step: pool.lbPair.binStep,
+      bins: bins.map(b => ({
+        bin_id: b.binId,
+        price: parseFloat(pool.fromPricePerLamport(Number(b.price))).toFixed(8),
+        liquidity_x: b.xAmount?.toString() || "0",
+        liquidity_y: b.yAmount?.toString() || "0",
+        is_active: b.binId === activeBin.binId,
+      })),
+    };
+  } catch (e) {
+    log("bin_liquidity_error", e.message);
+    return { error: e.message, pool: pool_address };
+  }
+}
+
+// ─── Get Swap Quote ────────────────────────────────────────────
+export async function getSwapQuote({ pool_address, amount, swap_for_y = true }) {
+  pool_address = normalizeMint(pool_address);
+  try {
+    const pool = await getPool(pool_address);
+    const activeBin = await pool.getActiveBin();
+    const binArrays = await pool.getBinArrayForSwap(swap_for_y);
+    const amountBN = new BN(Math.floor(amount * 1e9));
+    const quote = pool.swapQuote(amountBN, swap_for_y, new BN(100), activeBin, binArrays);
+    return {
+      pool: pool_address,
+      amount_in: amount,
+      swap_for_y,
+      amount_out: quote.outAmount?.toString(),
+      fee: quote.fee?.toString(),
+      price_impact_pct: quote.priceImpact ? (parseFloat(quote.priceImpact.toString()) / 100).toFixed(4) : null,
+      min_amount_out: quote.minOutAmount?.toString(),
+    };
+  } catch (e) {
+    log("swap_quote_error", e.message);
+    return { error: e.message, pool: pool_address };
+  }
+}
+
+// ─── Claim All Rewards (fees + LM rewards) ─────────────────────
+export async function claimAllRewards({ pool_address }) {
+  pool_address = normalizeMint(pool_address);
+  if (process.env.DRY_RUN === "true") {
+    return { dry_run: true, pool: pool_address, message: "DRY RUN — no transaction sent" };
+  }
+  try {
+    const wallet = getWallet();
+    poolCache.delete(pool_address);
+    const pool = await getPool(pool_address);
+    const openPositions = (_positionsCache?.positions || []).filter(p => p.pool === pool_address);
+    if (openPositions.length === 0) {
+      return { success: false, error: "No cached open positions for this pool. Run get_my_positions first." };
+    }
+    const results = [];
+    for (const pos of openPositions) {
+      const txHashes = [];
+      try {
+        const positionData = await pool.getPosition(new PublicKey(pos.position));
+        // Claim swap fees
+        const feeTxs = await pool.claimSwapFee({ owner: wallet.publicKey, position: positionData });
+        if (feeTxs?.length > 0) {
+          for (const tx of feeTxs) {
+            txHashes.push(await sendAndConfirmTransaction(getConnection(), tx, [wallet]));
+          }
+        }
+        // Claim LM rewards (if any)
+        try {
+          const lmTxs = await pool.claimLMReward({ owner: wallet.publicKey, position: positionData });
+          if (lmTxs?.length > 0) {
+            for (const tx of lmTxs) {
+              txHashes.push(await sendAndConfirmTransaction(getConnection(), tx, [wallet]));
+            }
+          }
+        } catch { /* no LM rewards — normal */ }
+        results.push({ position: pos.position, txs: txHashes, success: true });
+        recordClaim(pos.position);
+      } catch (e) {
+        results.push({ position: pos.position, error: e.message, success: false });
+      }
+    }
+    _positionsCacheAt = 0;
+    return { success: true, pool: pool_address, results, base_mint: pool.lbPair.tokenXMint.toString() };
+  } catch (e) {
+    log("claim_all_error", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
 // ─── Search Pools by Query ─────────────────────────────────────
 export async function searchPools({ query, limit = 10 }) {
   const url = `https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(query)}`;
